@@ -30,6 +30,12 @@ class DigilentAdept : public JtagInterface {
 	bool isFull() override { return false; }
 	int flush() override { return 0; }
 
+	/* EPP support */
+	bool eppEnable();
+	bool eppDisable();
+	bool eppPutReg(uint8_t addr, const uint8_t *data, uint32_t len);
+	bool eppGetReg(uint8_t addr, uint8_t *data, uint32_t len);
+
 	/* Device Management support */
 	bool configReset(bool assert_reset);
 	int queryDone();

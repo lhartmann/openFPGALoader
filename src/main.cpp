@@ -69,9 +69,11 @@
 #ifdef ENABLE_XVC_SERVER
 #include "xvc_server.hpp"
 #endif
+#ifdef ENABLE_DIGILENT_ADEPT
+#include "digilentAdept.hpp"
+#endif
 
 #define DEFAULT_FREQ 	6000000
-
 
 
 
@@ -134,8 +136,11 @@ struct arguments {
 	bool read_xadc;
 	std::string read_register;
 	std::string user_flash;
+#ifdef ENABLE_DIGILENT_ADEPT
+	std::string epp_write;
+	std::string epp_read;
+#endif
 };
-
 
 
 int run_xvc_server(const struct arguments &args, const cable_t &cable,
@@ -177,8 +182,10 @@ int main(int argc, char **argv)
 			"", false, {},  // mcufw conmcu, user_misc_dev_list
 			false, false, "", // read_dna, read_xadc, read_register
 			"" // user_flash
+#ifdef ENABLE_DIGILENT_ADEPT
+			, "", ""
+#endif
 	};
-
 
 	/* parse arguments */
 	int ret = parse_opt(argc, argv, &args, &pins_config);
@@ -480,8 +487,95 @@ int main(int argc, char **argv)
 		}
 	}
 
-	if (found != 0) {
+#ifdef ENABLE_DIGILENT_ADEPT
+	if (!args.epp_write.empty() || !args.epp_read.empty()) {
+		if (cable.type != MODE_DIGILENT_ADEPT) {
+			printError("Error: EPP operations require a Digilent Adept cable/board");
+			delete jtag;
+			return EXIT_FAILURE;
+		}
+		DigilentAdept *adept = dynamic_cast<DigilentAdept*>(jtag->get_ll_class());
+		if (!adept) {
+			printError("Error: Failed to obtain Digilent Adept interface");
+			delete jtag;
+			return EXIT_FAILURE;
+		}
+		if (!adept->eppEnable()) {
+			printError("Error: Failed to enable EPP on Adept controller");
+			delete jtag;
+			return EXIT_FAILURE;
+		}
 
+		if (!args.epp_write.empty()) {
+			// format: <addr>:<hexdata>
+			size_t colon = args.epp_write.find(':');
+			if (colon == std::string::npos) {
+				printError("Error: epp-write format is <addr>:<hexdata>");
+				adept->eppDisable();
+				delete jtag;
+				return EXIT_FAILURE;
+			}
+			uint8_t addr = std::stoul(args.epp_write.substr(0, colon), nullptr, 0);
+			std::string hex_str = args.epp_write.substr(colon + 1);
+			if (hex_str.rfind("0x", 0) == 0 || hex_str.rfind("0X", 0) == 0)
+				hex_str = hex_str.substr(2);
+			if (hex_str.length() % 2 != 0)
+				hex_str = "0" + hex_str;
+			std::vector<uint8_t> data;
+			for (size_t i = 0; i < hex_str.length(); i += 2) {
+				uint8_t byte = std::stoul(hex_str.substr(i, 2), nullptr, 16);
+				data.push_back(byte);
+			}
+			if (data.empty()) {
+				printError("Error: No data provided for epp-write");
+				adept->eppDisable();
+				delete jtag;
+				return EXIT_FAILURE;
+			}
+			if (!adept->eppPutReg(addr, data.data(), data.size())) {
+				printError("Error: EPP write failed");
+				adept->eppDisable();
+				delete jtag;
+				return EXIT_FAILURE;
+			}
+			printSuccess("EPP write to reg 0x" + std::to_string(addr) + " (" + std::to_string(data.size()) + " byte(s)) successful");
+		}
+
+		if (!args.epp_read.empty()) {
+			// format: <addr>[:<len>]
+			size_t colon = args.epp_read.find(':');
+			uint8_t addr = 0;
+			uint32_t len = 1;
+			if (colon != std::string::npos) {
+				addr = std::stoul(args.epp_read.substr(0, colon), nullptr, 0);
+				len = std::stoul(args.epp_read.substr(colon + 1), nullptr, 0);
+			} else {
+				addr = std::stoul(args.epp_read, nullptr, 0);
+			}
+			if (len == 0) len = 1;
+			std::vector<uint8_t> rx(len, 0);
+			if (!adept->eppGetReg(addr, rx.data(), len)) {
+				printError("Error: EPP read failed");
+				adept->eppDisable();
+				delete jtag;
+				return EXIT_FAILURE;
+			}
+			std::stringstream ss;
+			ss << "EPP read reg 0x" << std::hex << (int)addr << " (" << std::dec << len << " byte(s)):";
+			for (size_t i = 0; i < len; i++) {
+				ss << " 0x" << std::hex << std::setw(2) << std::setfill('0') << (int)rx[i];
+			}
+			printSuccess(ss.str());
+		}
+
+		adept->eppDisable();
+		delete jtag;
+		return EXIT_SUCCESS;
+	}
+#endif
+
+
+	if (found != 0) {
 		if (args.index_chain < 0) {
 			if (args.prg_type == Device::WR_FLASH) {
 				for (size_t i = 0; i < found; i++) {
@@ -1109,8 +1203,13 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 				cxxopts::value<std::string>(args->read_register))
 			("user-flash", "User flash file (Gowin LittleBee FPGA only)",
 				cxxopts::value<std::string>(args->user_flash))
+#ifdef ENABLE_DIGILENT_ADEPT
+			("epp-write", "EPP write register: <addr>:<hexdata> (Adept only)",
+				cxxopts::value<std::string>(args->epp_write))
+			("epp-read", "EPP read register: <addr>[:<len>] (Adept only)",
+				cxxopts::value<std::string>(args->epp_read))
+#endif
 			("V,version", "Print program version")
-
 			("Version", "Print program version (Deprecated)");
 
 
@@ -1326,8 +1425,12 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 			!args->conmcu &&
 			!args->read_dna &&
 			!args->read_xadc &&
-			args->read_register.empty()) {
-
+			args->read_register.empty()
+#ifdef ENABLE_DIGILENT_ADEPT
+			&& args->epp_write.empty() &&
+			args->epp_read.empty()
+#endif
+			) {
 			printError("Error: bitfile not specified");
 			std::cout << options.help() << std::endl;
 			return -1;

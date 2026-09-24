@@ -511,8 +511,43 @@ int DigilentAdept::writeTDI(const uint8_t *tx, uint8_t *rx, uint32_t len, bool e
 	return len;
 }
 
-bool DigilentAdept::configReset(bool assert_reset)
+bool DigilentAdept::eppEnable()
+{
+	return (cmd(APP_DEPP, CMD_APP_ENABLE, 0, nullptr, 0, nullptr, 0) == 0);
+}
 
+bool DigilentAdept::eppDisable()
+{
+	return (cmd(APP_DEPP, CMD_APP_DISABLE, 0, nullptr, 0, nullptr, 0) == 0);
+}
+
+bool DigilentAdept::eppPutReg(uint8_t addr, const uint8_t *data, uint32_t len)
+{
+	uint8_t req[5];
+	req[0] = addr;
+	req[1] = len & 0xff;
+	req[2] = (len >> 8) & 0xff;
+	req[3] = (len >> 16) & 0xff;
+	req[4] = (len >> 24) & 0xff;
+
+	return (cmd_long(APP_DEPP, CMD_DEPP_PUT_REG, 0, req, sizeof(req),
+	                 data, len, nullptr, 0) == 0);
+}
+
+bool DigilentAdept::eppGetReg(uint8_t addr, uint8_t *data, uint32_t len)
+{
+	uint8_t req[5];
+	req[0] = addr;
+	req[1] = len & 0xff;
+	req[2] = (len >> 8) & 0xff;
+	req[3] = (len >> 16) & 0xff;
+	req[4] = (len >> 24) & 0xff;
+
+	return (cmd_long(APP_DEPP, CMD_DEPP_GET_REG, 0, req, sizeof(req),
+	                 nullptr, 0, data, len) == 0);
+}
+
+bool DigilentAdept::configReset(bool assert_reset)
 {
 	uint8_t p = (assert_reset ? 1 : 0);
 	return (cmd(APP_DMGT, CMD_DMGT_CONFIG_RESET, 0, &p, 1, nullptr, 0) == 0);
